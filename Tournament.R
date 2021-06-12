@@ -4,6 +4,7 @@ library(ape)
 library(phytools)
 library(lubridate)
 options(warn = 0)
+pdf.options(title = paste("Draw as of", format(Sys.Date(), "%a %b %d")))
 
 setwd("~/Downloads/Tennis/")
 mySeed = 13251259L
