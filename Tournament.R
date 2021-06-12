@@ -3,16 +3,31 @@ library(magrittr)
 library(ape)
 library(phytools)
 library(lubridate)
+options(warn = 0)
+
 setwd("~/Downloads/Tennis/")
 mySeed = 13251259L
 startDate = as.Date("2021-06-11")
 numberOfDays = 84L
-options(warn = 0)
-
+POWERS = 2^(0:6)
 Singleton = list(Nnode = 0, tip.label = "1", edge = matrix(NA, nrow = 0, ncol = 2))
 class(Singleton) = "phylo"
 Cherry = list(Nnode = 1, tip.label = c("1", "2"), edge = rbind(c(3,1), c(3,2)), edge.length = rep(1, 2))
 class(Cherry) = "phylo"
+
+### This function computes the indices to use for maximizing tree distances between pairs of highly seeded players
+computeIndices = function(numRounds = 5) {
+  stopifnot(numRounds > 0)
+  numRows = 2^numRounds
+  Mat = matrix(NA, numRows, numRounds)
+  init = c(TRUE, FALSE)
+  for (ind in 1:numRounds) {
+    Mat[, ind] = init
+    init = c(init, !init)
+  }
+  Inds = Mat %*% 2^((numRounds - 1):0) + 1
+  Inds
+}
 
 ### This function merges two subtrees into one; it is similar to bind.tree with added root edges
 mergeSubtrees = function(tree1, tree2) {
@@ -31,6 +46,16 @@ mergeSubtrees = function(tree1, tree2) {
   tree$edge = rbind(c(root, root1), c(root, root2), Edges1, Edges2)
   class(tree) = "phylo"
   tree
+}
+
+getParents = function(tree, nodeNumbers) {
+  parents = tree$edge[getParentEdges(tree, nodeNumbers), 1]
+  parents
+}
+
+getParentEdges = function(tree, nodeNumbers) {
+  parentEdges = match(nodeNumbers, tree$edge[,2])
+  parentEdges
 }
 
 prepareInitialSpreasheets = function() {
@@ -157,29 +182,12 @@ prepareInitialSpreasheets = function() {
   write_csv(problemD, "ProblematicEntries.csv")
 }
 
-createAllBrackets = function() {
-  singlesDir = "SeededSingles/"
-  LF1 = list.files(path = singlesDir, pattern = ".csv")
-  for (fname in LF1) {
-    print(fname)
-    Z = createBracket(paste0(singlesDir, fname), singles = TRUE)
-  }
-  doublesDir = "SeededDoubles/"
-  LF2 = list.files(path = doublesDir, pattern = ".csv")
-  for (fname in LF2) {
-    print(fname)
-    W = createBracket(paste0(doublesDir, fname), singles = FALSE)
-  }
-  return(TRUE)
-}
-
 createBracket = function(fname = "SeededSingles/Entries_Men's_singles.csv", singles = TRUE) {
   set.seed(mySeed)
   Tab = read_csv(fname) %>%
     mutate_at("Seed", as.integer)
   N = nrow(Tab)
-  powers = 2^(0:6)
-  fullN = min(powers[powers >= N])
+  fullN = min(POWERS[POWERS >= N])
   numByes = fullN - N
   maxAssignedSeed = max(Tab$Seed, na.rm = TRUE)
   if (!is.finite(maxAssignedSeed)) {
@@ -217,36 +225,83 @@ createBracket = function(fname = "SeededSingles/Entries_Men's_singles.csv", sing
   if (singles) {
     edgeLabs = paste(Tab$Forename, Tab$Surname)
   } else {
-    edgeLabs = paste(Tab$Forename, "and", Tab$PartnerForename)
+    edgeLabs = paste0(Tab$Forename, " ", str_sub(Tab$Surname, 1, 1), ". and ", 
+                     Tab$PartnerForename, " ", str_sub(Tab$PartnerSurname, 1, 1), ".")
     if (numByes > 0) {
       edgeLabs[which(Tab$Forename == "BYE")] = "BYE"
     }
   }
-  endDates = startDate + numberOfDays/(numRounds - 1)*(1:(numRounds - 1))
-  # jpeg(str_replace(fname, ".csv", ".jpg"), height = fullN * 20, width = numRounds * 150, type = "quartz")
-  # png(str_replace(fname, ".csv", ".png"), height = fullN * 20, width = numRounds * 150, type = "quartz")
-  pdf(str_replace(fname, ".csv", ".pdf"), height = fullN * 0.18 + 2, width = numRounds * 1.5 + 1, compress = FALSE)
+  # endDates = startDate + numberOfDays/(numRounds - 1)*(1:(numRounds - 1))
+  baseFname = fname %>% 
+    str_remove_all("[A-Za-z0-9\\_]+\\/") 
+  drawFname = baseFname %>% 
+    str_replace(".csv", ".pdf")
+  pdf(drawFname, height = fullN * 0.18 + 2, width = numRounds * 1.5 + 1, compress = FALSE)
   plotTree(initTree, direction = "leftwards", tips = tipInds, node.numbers = FALSE, offset = 10)
-  pickNodes = c(which(Tab$Seed == 1), which(Tab$Seed == 2))
-  nodelabels(c(1, 2), pickNodes, frame = "circle", bg = "white", col = "black", cex = 0.5)
-  lastPP = get("last_plot.phylo", envir = .PlotPhyloEnv)
-  pickEdges = match(1:fullN, lastPP$edge[,2])
-  edgelabels(edgeLabs, pickEdges, frame = "none", bg = "white", adj = c(0.6, -0.45), cex = 0.5)
-  # axisPhylo(side = 1, root.time = 1, backward = TRUE)
+  if (fullN > 2) {
+    pickNodes = match(c(1, 2), Tab$Seed)
+    nodelabels(c(1, 2), pickNodes, frame = "circle", bg = "white", col = "black", cex = 0.5)
+  }
+  pickEdges = getParentEdges(initTree, 1:fullN)
+  edgelabels(edgeLabs, pickEdges, frame = "none", bg = "white", adj = c(0.55, -0.45), cex = 0.5)
+  if (numByes > 0) {
+    byeNodes = match(1:numByes, Tab$Seed)
+    promotedEdges = getParentEdges(initTree, getParents(initTree, byeNodes))
+    edgelabels(edgeLabs[byeNodes], promotedEdges, frame = "none", bg = "white", adj = c(0.55, -0.45), cex = 0.5)
+  }
   # pickNode = lastPP$edge[lastPP$edge[,2] == 17, 1]
   # nodelabels("0-6\n0-6", pickNode, frame = "rect", col = "red", bg = "white", cex = 0.5)
   dev.off()
-  write_csv(Tab, str_replace(fname, ".csv", "FullySeeded.csv"))
+  seedFname = baseFname %>%
+    paste0("SeededAll/", .) %>%
+    str_replace(".csv", "FullySeeded.csv")
+  if (!file.exists(seedFname)) { 
+    write_csv(Tab, seedFname) 
+  }
+  Tab
 }
 
-computeIndices = function(numRounds = 5) {
-  numRows = 2^numRounds
-  Mat = matrix(NA, numRows, numRounds)
-  init = c(TRUE, FALSE)
-  for (ind in 1:numRounds) {
-    Mat[, ind] = init
-    init = c(init, !init)
+createFullDirectory = function() {
+  TabDir = read_csv("Directory.csv")
+  doublesDir = "SeededDoubles/"
+  LF2 = list.files(path = doublesDir, pattern = ".csv")
+  fullDir = TabDir
+  fullNames = paste0(TabDir$Forename, TabDir$Surname)
+  for (fname in LF2) {
+    print(fname)
+    extraTab = read_csv(paste0(doublesDir, fname))
+    extraParticipants = extraTab %>%
+      select(Forename, Surname)
+    extraPartners = extraTab %>%
+      select(PartnerForename, PartnerSurname) %>%
+      rename(Forename = PartnerForename, Surname = PartnerSurname)
+    extraParticipants = extraParticipants %>%
+      bind_rows(extraPartners) %>%
+      mutate(fullName = paste0(Forename, Surname), listed = map_lgl(fullName, ~{any(agrepl(., fullNames))})) %>%
+      filter(!listed) %>%
+      select(-fullName, -listed)
+    fullDir = fullDir %>%
+      bind_rows(extraParticipants)
   }
-  Inds = Mat %*% 2^((numRounds - 1):0) + 1
-  Inds
+  fullDir = fullDir %>%
+    distinct(Forename, Surname, .keep_all = TRUE) %>%
+    arrange(Surname)
+  write_csv(fullDir, "FullDirectory.csv")
+  fullDir
+}
+
+createAllBrackets = function() {
+  singlesDir = "SeededSingles/"
+  LF1 = list.files(path = singlesDir, pattern = ".csv")
+  for (fname in LF1) {
+    print(fname)
+    Z = createBracket(paste0(singlesDir, fname), singles = TRUE)
+  }
+  doublesDir = "SeededDoubles/"
+  LF2 = list.files(path = doublesDir, pattern = ".csv")
+  for (fname in LF2) {
+    print(fname)
+    W = createBracket(paste0(doublesDir, fname), singles = FALSE)
+  }
+  return(TRUE)
 }
