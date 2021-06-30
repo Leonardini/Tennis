@@ -3,6 +3,8 @@ library(magrittr)
 library(ape)
 library(phytools)
 library(lubridate)
+library(googlesheets4)
+gs4_deauth()
 options(warn = 0)
 pdf.options(title = paste("Draw as of", format(Sys.Date(), "%a %b %d")))
 
@@ -183,85 +185,6 @@ prepareInitialSpreasheets = function() {
   write_csv(problemD, "ProblematicEntries.csv")
 }
 
-createBracket = function(fname = "SeededSingles/Entries_Men's_singles.csv", singles = TRUE) {
-  set.seed(mySeed)
-  Tab = read_csv(fname) %>%
-    mutate_at("Seed", as.integer)
-  N = nrow(Tab)
-  fullN = min(POWERS[POWERS >= N])
-  numByes = fullN - N
-  maxAssignedSeed = max(Tab$Seed, na.rm = TRUE)
-  if (!is.finite(maxAssignedSeed)) {
-    maxAssignedSeed = 0L
-  }
-  stopifnot(sum(is.na(Tab$Seed)) == N - maxAssignedSeed)
-  if (any(is.na(Tab$Seed))) {
-    restSeeds = sample((maxAssignedSeed + 1):N, replace = FALSE)
-    Tab$Seed[is.na(Tab$Seed)] = restSeeds
-  }
-  if (numByes > 0) {
-    extraTab = tibble(Forename = "BYE", Surname = "", Seed = N + (1:numByes))
-    Tab = bind_rows(Tab, extraTab)
-  }
-  numRounds = as.integer(round(log2(fullN)))
-  initTree = mergeSubtrees(Singleton, Singleton)
-  if (numRounds > 1) {
-    for (ind in 1:(numRounds - 1)) {
-      initTree = mergeSubtrees(initTree, initTree)
-    }
-  }
-  initTree$root.edge <- 1
-  initTree$edge.length = rep(1, nrow(initTree$edge))
-  attr(initTree,"order") = "cladewise"
-  initTree = rootedge.to.singleton(initTree)
-  if (Ntip(initTree) > 2) {
-    tipInds = setNames(round(1.5 * (initTree$tip.label - 0.5)), initTree$tip.label)
-  } else {
-    tipInds = setNames(initTree$tip.label, initTree$tip.label)
-  }
-  goodIndices = computeIndices(numRounds = numRounds)
-  Tab = Tab %>%
-    arrange(Seed) %>%
-    slice(goodIndices)
-  if (singles) {
-    edgeLabs = paste(Tab$Forename, Tab$Surname)
-  } else {
-    edgeLabs = paste0(Tab$Forename, " ", str_sub(Tab$Surname, 1, 1), ". and ", 
-                     Tab$PartnerForename, " ", str_sub(Tab$PartnerSurname, 1, 1), ".")
-    if (numByes > 0) {
-      edgeLabs[which(Tab$Forename == "BYE")] = "BYE"
-    }
-  }
-  # endDates = startDate + numberOfDays/(numRounds - 1)*(1:(numRounds - 1))
-  baseFname = fname %>% 
-    str_remove_all("[A-Za-z0-9\\_]+\\/") 
-  drawFname = baseFname %>% 
-    str_replace(".csv", ".pdf")
-  pdf(drawFname, height = fullN * 0.18 + 2, width = numRounds * 1.5 + 1, compress = FALSE)
-  plotTree(initTree, direction = "leftwards", tips = tipInds, node.numbers = FALSE, offset = 10)
-  if (fullN > 2) {
-    pickNodes = match(c(1, 2), Tab$Seed)
-    nodelabels(c(1, 2), pickNodes, frame = "circle", bg = "white", col = "black", cex = 0.5)
-  }
-  pickEdges = getParentEdges(initTree, 1:fullN)
-  edgelabels(edgeLabs, pickEdges, frame = "none", bg = "white", adj = c(0.55, -0.45), cex = 0.5)
-  if (numByes > 0) {
-    byeNodes = match(1:numByes, Tab$Seed)
-    promotedEdges = getParentEdges(initTree, getParents(initTree, byeNodes))
-    edgelabels(edgeLabs[byeNodes], promotedEdges, frame = "none", bg = "white", adj = c(0.55, -0.45), cex = 0.5)
-  }
-  # pickNode = lastPP$edge[lastPP$edge[,2] == 17, 1]
-  # nodelabels("0-6\n0-6", pickNode, frame = "rect", col = "red", bg = "white", cex = 0.5)
-  dev.off()
-  seedFname = baseFname %>%
-    paste0("SeededAll/", .) %>%
-    str_replace(".csv", "FullySeeded.csv")
-  if (!file.exists(seedFname)) { 
-    write_csv(Tab, seedFname) 
-  }
-  Tab
-}
-
 createFullDirectory = function() {
   TabDir = read_csv("Directory.csv")
   doublesDir = "SeededDoubles/"
@@ -287,22 +210,193 @@ createFullDirectory = function() {
   fullDir = fullDir %>%
     distinct(Forename, Surname, .keep_all = TRUE) %>%
     arrange(Surname)
+  fullDir = fullDir %>%
+    mutate_at("Phone", ~{
+      as.character(.) %>%
+      str_remove("^44") %>%
+      str_replace("^7", "07") %>%
+      str_replace("NA", "") %>%
+      paste0("\t", .)}) %>%
+    mutate_at("Email", ~{as.character(.) %>% 
+        str_replace("NA", "")})
   write_csv(fullDir, "FullDirectory.csv")
   fullDir
 }
 
-createAllBrackets = function() {
-  singlesDir = "SeededSingles/"
-  LF1 = list.files(path = singlesDir, pattern = ".csv")
-  for (fname in LF1) {
-    print(fname)
-    Z = createBracket(paste0(singlesDir, fname), singles = TRUE)
+createAllBrackets = function(singlesDir = "SeededSingles/", doublesDir = "SeededDoubles/") {
+  if (!is.null(singlesDir)) {
+    LF1 = list.files(path = singlesDir, pattern = ".csv")
+    for (fname in LF1) {
+      Z = createBracket(paste0(singlesDir, fname), singles = TRUE)
+    }
   }
-  doublesDir = "SeededDoubles/"
-  LF2 = list.files(path = doublesDir, pattern = ".csv")
-  for (fname in LF2) {
-    print(fname)
-    W = createBracket(paste0(doublesDir, fname), singles = FALSE)
+  if (!is.null(doublesDir)) {
+    LF2 = list.files(path = doublesDir, pattern = ".csv")
+    for (fname in LF2) {
+      W = createBracket(paste0(doublesDir, fname), singles = FALSE)
+    }
   }
   return(TRUE)
+}
+
+processLatestResults = function() {
+  Tab = read_sheet("https://docs.google.com/spreadsheets/d/1GNerCMbSkztdg4CSOSQNqjJWD3ozVCesEJ9wmi-Bumo/edit?resourcekey#gid=73994542") %>%
+    select(Timestamp, `Which event would you like to enter a match result for?`, `Winner's name(s)`, `Loser's name(s)`, `What was the match score?`) %>%
+    rename(Time = Timestamp, Event = `Which event would you like to enter a match result for?`, 
+           Winner = `Winner's name(s)`, Loser = `Loser's name(s)`, Score = `What was the match score?`) %>%
+    mutate_at("Time", ~{format(., "%d-%m-%Y")})
+  fname = paste0("Results_", str_replace_all(Sys.Date(), " ", "_"), ".csv")
+  write_csv(Tab, fname)
+  Tab = Tab %>%
+    mutate_at("Event", ~{str_replace_all(., "\\ ", "_")}) %>%
+    mutate(Doubles = str_detect(Event, "doubles"))
+  TabG = Tab %>%
+    group_by(Event) %>%
+    group_split()
+  N = length(TabG)
+  for (index in 1:N) {
+    curTab = TabG[[index]]
+    curEvent = curTab$Event[1]
+    curDoubles = curTab$Doubles[1]
+    curFile = paste0("SeededAll", "/Entries_", curEvent, "FullySeeded.csv")
+    curDraw = read_csv(curFile)
+    if (curDoubles) {
+      curNames = curDraw %>%
+        mutate(fullName = paste(Forename, Surname, "and", PartnerForename, PartnerSurname)) %>%
+        pull(fullName)
+    } else {
+      curNames = curDraw %>% 
+        mutate(fullName = paste(Forename, Surname)) %>%
+        pull(fullName)
+    }
+    usedNames = curTab$Winner
+    if (!all(usedNames %in% curNames)) {
+      print(paste("Warning:", paste(setdiff(usedNames, curNames), collapse = ", "), "have not been found in the draw!"))
+      next
+    }
+    baseFname = str_remove(curFile, "SeededAll/") %>% 
+        str_replace("FullySeeded.csv", ".csv")
+    updateBracket(initDraw = curDraw, newResults = curTab, singles = !(curDoubles), baseFname = baseFname)
+  }
+  Tab
+}
+
+updateBracket = function(initDraw, newResults = NULL, singles = FALSE, baseFname = NULL) {
+  N = nrow(initDraw)
+  fullN = min(POWERS[POWERS >= N])
+  numByes = fullN - N
+  if (any(is.na(initDraw$Seed))) {
+    print(paste("Generating seeds randomly for the", sum(is.na(initDraw$Seed)), "currently unseeded players"))
+    set.seed(mySeed)
+    maxAssignedSeed = ifelse(any(!is.na(initDraw$Seed)), max(initDraw$Seed, na.rm = TRUE), 0L)
+    stopifnot(sum(is.na(initDraw$Seed)) == N - maxAssignedSeed)
+    restSeeds = sample((maxAssignedSeed + 1):N, replace = FALSE)
+    initDraw$Seed[is.na(initDraw$Seed)] = restSeeds
+  }
+  if (numByes > 0) {
+    extraDraw = tibble(Forename = "BYE", Surname = "", Seed = N + (1:numByes))
+    initDraw  = bind_rows(initDraw, extraDraw)
+  }
+  numByes = sum(initDraw$Forename == "BYE")
+  numRounds = as.integer(round(log2(fullN)))
+  initTree  = mergeSubtrees(Singleton, Singleton)
+  if (numRounds > 1) {
+    for (ind in 1:(numRounds - 1)) {
+      initTree = mergeSubtrees(initTree, initTree)
+    }
+  }
+  initTree$root.edge <- 1
+  initTree$edge.length = rep(1, nrow(initTree$edge))
+  attr(initTree,"order") = "cladewise"
+  initTree = rootedge.to.singleton(initTree)
+  if (Ntip(initTree) > 2) {
+    tipInds = setNames(round(1.5 * (initTree$tip.label - 0.5)), initTree$tip.label)
+  } else {
+    tipInds = setNames(initTree$tip.label, initTree$tip.label)
+  }
+  goodIndices = computeIndices(numRounds = numRounds)
+  initDraw = initDraw %>%
+    arrange(Seed) %>%
+    slice(goodIndices) %>%
+    mutate(fullName = paste(Forename, Surname)) %>%
+    mutate(shortName = paste(Forename, paste0(str_sub(Surname, 1, 1), ".")))
+  edgeLabs  = initDraw$fullName
+  fullNames = edgeLabs
+  if (!singles) {
+    initDraw = initDraw %>%
+      mutate(fullPartnerName = paste(PartnerForename, PartnerSurname)) %>%
+      mutate(shortPartnerName = paste(PartnerForename, paste0(str_sub(PartnerSurname, 1, 1), "."))) %>%
+      mutate(fullTeamName = paste(fullName, "and", fullPartnerName)) %>%
+      mutate(shortTeamName = paste(shortName, "and", shortPartnerName))
+    edgeLabs  = initDraw$shortTeamName
+    fullNames = initDraw$fullTeamName
+  }
+  if (numByes > 0) {
+    edgeLabs [which(initDraw$Forename == "BYE")] = "BYE"
+    fullNames[which(initDraw$Forename == "BYE")] = "BYE"
+  }
+  drawFname = baseFname %>% 
+    str_replace(".csv", ".pdf")
+  pdf(drawFname, height = fullN * 0.18 + 2, width = numRounds * 1.5 + 1, compress = FALSE)
+  plotTree(initTree, direction = "leftwards", tips = tipInds, node.numbers = FALSE, offset = 10)
+  if (fullN > 2) {
+    pickNodes = match(c(1, 2), initDraw$Seed)
+    nodelabels(c(1, 2), pickNodes, frame = "circle", bg = "white", col = "black", cex = 0.5)
+  }
+  pickEdges = getParentEdges(initTree, 1:fullN)
+  edgelabels(edgeLabs, pickEdges, frame = "none", bg = "white", adj = c(0.55, -0.45), cex = 0.5)
+  if (numByes > 0) {
+    byeNodes = match(1:numByes, initDraw$Seed)
+    promotedEdges = getParentEdges(initTree, getParents(initTree, byeNodes))
+    edgelabels(edgeLabs[byeNodes], promotedEdges, frame = "none", bg = "white", adj = c(0.55, -0.45), cex = 0.5)
+  }
+  if (!is.null(newResults)) {
+    curDraw = initDraw %>%
+      mutate(Height = 1 + as.integer(Seed <= numByes))
+    for (ind in 1:nrow(newResults)) {
+      curResult =  newResults %>%
+        slice(ind)
+      curWinner = curResult$Winner
+      curScore  = curResult$Score %>% 
+        str_split(",") %>%
+        unlist() %>%
+        str_trim(side = "both")
+      if (curScore[1] == "Walkover") { ### special case!
+        curScore = "Walk \nover "
+      } else {
+        curScore = paste0(paste(curScore, collapse = " \n"), " ")
+      }
+      curNode   = match(curWinner, fullNames)
+      shortWinner = edgeLabs[curNode]
+      curHeight = curDraw %>%
+        slice(curNode) %>%
+        pull(Height)
+      curDraw$Height[curNode] %<>%
+        add(1)
+      for (h in 1:curHeight) {
+        curNode   = getParents(initTree, curNode)
+      }
+      nodelabels(curScore, curNode, frame = "rect", col = "red", bg = "white", cex = 0.5)
+      curEdge = getParentEdges(initTree, curNode)
+      edgelabels(shortWinner, curEdge, frame = "none", bg = "white", adj = c(0.55, -0.45), cex = 0.5)
+    }
+  }
+  dev.off()
+  initDraw
+}
+
+createBracket = function(fname = "SeededSingles/Entries_Men's_singles.csv", singles = TRUE) {
+  Tab = read_csv(fname) %>%
+    mutate_at("Seed", as.integer)
+  baseFname = str_remove(fname, "Seeded(Singles|Doubles|All)/")
+  Tab = updateBracket(initDraw = Tab, newResults = NULL, singles = singles, baseFname = baseFname)
+  seedFname = baseFname %>%
+    paste0("SeededAll/", .)
+  if (!str_detect(seedFname, "FullySeeded.csv")) {
+    str_replace(".csv", "FullySeeded.csv")
+  }
+  if (!file.exists(seedFname)) { 
+    write_csv(Tab, seedFname) 
+  }
+  Tab
 }
