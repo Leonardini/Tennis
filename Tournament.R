@@ -244,7 +244,8 @@ processLatestResults = function() {
     select(Timestamp, `Which event would you like to enter a match result for?`, `Winner's name(s)`, `Loser's name(s)`, `What was the match score?`) %>%
     rename(Time = Timestamp, Event = `Which event would you like to enter a match result for?`, 
            Winner = `Winner's name(s)`, Loser = `Loser's name(s)`, Score = `What was the match score?`) %>%
-    mutate_at("Time", ~{format(., "%d-%m-%Y")})
+    mutate_at("Time", ~{format(., "%d-%m-%Y")}) %>%
+    mutate_all(~{str_trim(., side = "both")})
   fname = paste0("Results_", str_replace_all(Sys.Date(), " ", "_"), ".csv")
   write_csv(Tab, fname)
   Tab = Tab %>%
@@ -257,6 +258,7 @@ processLatestResults = function() {
   for (index in 1:N) {
     curTab = TabG[[index]]
     curEvent = curTab$Event[1]
+    print(curEvent)
     curDoubles = curTab$Doubles[1]
     curFile = paste0("SeededAll", "/Entries_", curEvent, "FullySeeded.csv")
     curDraw = read_csv(curFile)
@@ -270,6 +272,12 @@ processLatestResults = function() {
         pull(fullName)
     }
     usedNames = curTab$Winner
+    if (curDoubles) { ### Need to order each pair alphabetically!
+      usedNames = usedNames %>% 
+        str_split_fixed(" and ", n = 2) %>%
+        apply(1, function(x) {paste(sort(x), collapse = " and ")})
+      curTab$Winner = usedNames
+    }
     if (!all(usedNames %in% curNames)) {
       print(paste("Warning:", paste(setdiff(usedNames, curNames), collapse = ", "), "have not been found in the draw!"))
       next
@@ -399,4 +407,34 @@ createBracket = function(fname = "SeededSingles/Entries_Men's_singles.csv", sing
     write_csv(Tab, seedFname) 
   }
   Tab
+}
+
+reorderDoublesDraw = function(fname = "SeededAll/Entries_Mixed_doublesFullySeeded.csv") {
+  Tab = read_csv(fname)
+  TabM = Tab %>%
+    rowid_to_column("index") %>%
+    mutate(reorder = (Forename > PartnerForename) | (Forename == PartnerForename & Surname > PartnerSurname))
+  TabR = TabM %>%
+    filter(reorder) %>%
+    mutate(tempForename = Forename, Forename =  PartnerForename, PartnerForename = tempForename) %>%
+    mutate(tempSurname  =  Surname,  Surname =   PartnerSurname, PartnerSurname  =  tempSurname) %>%
+    select(-tempForename, -tempSurname)
+  TabO = TabM %>%
+    filter(is.na(reorder) | !reorder)
+  TabM = bind_rows(TabO, TabR) %>%
+    arrange(index) %>%
+    select(-index)
+  write_csv(TabM, fname)
+  TabM
+}
+
+reorderDoublesDraws = function() {
+  initDir = getwd()
+  setwd("SeededAll/")
+  LF = list.files(pattern = "doubles")
+  for (fname in LF) {
+    print(fname)
+    reorderDoublesDraw(fname)
+  }
+  setwd(initDir)
 }
