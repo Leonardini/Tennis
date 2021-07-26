@@ -25,5 +25,8 @@
    put "Entries_Men's_doubles_plate.pdf"
    put "Entries_Women's_doubles.pdf"
    put "Entries_Women's_singles.pdf"
+   put "Entries_Mixed_doubles_plate.pdf"
+   put "Entries_Women's_singles_plate.pdf"
+   put "Entries_Women's_doubles_plate.pdf"
    quit
 ftpEOF
