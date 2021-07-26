@@ -227,13 +227,13 @@ createAllBrackets = function(singlesDir = "SeededSingles/", doublesDir = "Seeded
   if (!is.null(singlesDir)) {
     LF1 = list.files(path = singlesDir, pattern = ".csv")
     for (fname in LF1) {
-      Z = createBracket(paste0(singlesDir, fname), singles = TRUE)
+      Z = createBracket(paste0(singlesDir, fname), singles = TRUE, mark = TRUE)
     }
   }
   if (!is.null(doublesDir)) {
     LF2 = list.files(path = doublesDir, pattern = ".csv")
     for (fname in LF2) {
-      W = createBracket(paste0(doublesDir, fname), singles = FALSE)
+      W = createBracket(paste0(doublesDir, fname), singles = FALSE, mark = TRUE)
     }
   }
   return(TRUE)
@@ -255,6 +255,7 @@ processLatestResults = function() {
     group_by(Event) %>%
     group_split()
   N = length(TabG)
+  missing = c()
   for (index in 1:N) {
     curTab = TabG[[index]]
     curEvent = curTab$Event[1]
@@ -280,16 +281,19 @@ processLatestResults = function() {
     }
     if (!all(usedNames %in% curNames)) {
       print(paste("Warning:", paste(setdiff(usedNames, curNames), collapse = ", "), "have not been found in the draw!"))
+      missing = c(missing, setdiff(usedNames, curNames))
       next
     }
     baseFname = str_remove(curFile, "SeededAll/") %>% 
         str_replace("FullySeeded.csv", ".csv")
-    updateBracket(initDraw = curDraw, newResults = curTab, singles = !(curDoubles), baseFname = baseFname)
+    updateBracket(initDraw = curDraw, newResults = curTab, singles = !(curDoubles), baseFname = baseFname, mark = TRUE)
   }
-  Tab
+  output = list(Tab, missing)
+  output
 }
 
-updateBracket = function(initDraw, newResults = NULL, singles = FALSE, baseFname = NULL) {
+updateBracket = function(initDraw, newResults = NULL, singles = FALSE, baseFname = NULL, mark = TRUE, TBD = FALSE) {
+  BYE = ifelse(TBD, "TBD", "BYE")
   N = nrow(initDraw)
   fullN = min(POWERS[POWERS >= N])
   numByes = fullN - N
@@ -302,10 +306,10 @@ updateBracket = function(initDraw, newResults = NULL, singles = FALSE, baseFname
     initDraw$Seed[is.na(initDraw$Seed)] = restSeeds
   }
   if (numByes > 0) {
-    extraDraw = tibble(Forename = "BYE", Surname = "", Seed = N + (1:numByes))
+    extraDraw = tibble(Forename = BYE, Surname = "", Seed = N + (1:numByes))
     initDraw  = bind_rows(initDraw, extraDraw)
   }
-  numByes = sum(initDraw$Forename == "BYE")
+  numByes = sum(initDraw$Forename == BYE)
   numRounds = as.integer(round(log2(fullN)))
   initTree  = mergeSubtrees(Singleton, Singleton)
   if (numRounds > 1) {
@@ -340,20 +344,20 @@ updateBracket = function(initDraw, newResults = NULL, singles = FALSE, baseFname
     fullNames = initDraw$fullTeamName
   }
   if (numByes > 0) {
-    edgeLabs [which(initDraw$Forename == "BYE")] = "BYE"
-    fullNames[which(initDraw$Forename == "BYE")] = "BYE"
+    edgeLabs [which(initDraw$Forename == BYE)] = BYE
+    fullNames[which(initDraw$Forename == BYE)] = BYE  
   }
   drawFname = baseFname %>% 
     str_replace(".csv", ".pdf")
   pdf(drawFname, height = fullN * 0.18 + 2, width = numRounds * 1.5 + 1, compress = FALSE)
   plotTree(initTree, direction = "leftwards", tips = tipInds, node.numbers = FALSE, offset = 10)
-  if (fullN > 2) {
+  if (fullN > 2 && mark) {
     pickNodes = match(c(1, 2), initDraw$Seed)
     nodelabels(c(1, 2), pickNodes, frame = "circle", bg = "white", col = "black", cex = 0.5)
   }
   pickEdges = getParentEdges(initTree, 1:fullN)
   edgelabels(edgeLabs, pickEdges, frame = "none", bg = "white", adj = c(0.55, -0.45), cex = 0.5)
-  if (numByes > 0) {
+  if (numByes > 0 && !TBD) {
     byeNodes = match(1:numByes, initDraw$Seed)
     promotedEdges = getParentEdges(initTree, getParents(initTree, byeNodes))
     edgelabels(edgeLabs[byeNodes], promotedEdges, frame = "none", bg = "white", adj = c(0.55, -0.45), cex = 0.5)
@@ -393,15 +397,15 @@ updateBracket = function(initDraw, newResults = NULL, singles = FALSE, baseFname
   initDraw
 }
 
-createBracket = function(fname = "SeededSingles/Entries_Men's_singles.csv", singles = TRUE) {
+createBracket = function(fname = "SeededSingles/Entries_Men's_singles.csv", singles = TRUE, mark = TRUE, TBD = FALSE) {
   Tab = read_csv(fname) %>%
     mutate_at("Seed", as.integer)
   baseFname = str_remove(fname, "Seeded(Singles|Doubles|All)/")
-  Tab = updateBracket(initDraw = Tab, newResults = NULL, singles = singles, baseFname = baseFname)
+  Tab = updateBracket(initDraw = Tab, newResults = NULL, singles = singles, baseFname = baseFname, mark = mark, TBD = TBD)
   seedFname = baseFname %>%
     paste0("SeededAll/", .)
   if (!str_detect(seedFname, "FullySeeded.csv")) {
-    str_replace(".csv", "FullySeeded.csv")
+    str_replace(seedFname, ".csv", "FullySeeded.csv")
   }
   if (!file.exists(seedFname)) { 
     write_csv(Tab, seedFname) 
@@ -438,3 +442,87 @@ reorderDoublesDraws = function() {
   }
   setwd(initDir)
 }
+
+makePlateDraws = function(event = "Men's", singles = TRUE, removeSpecial = ifelse(event == "Men's" && singles, 10, 0), 
+                          TBD = FALSE, firstMatch = FALSE) {
+  BYE = ifelse(TBD, "TBD", "BYE")
+  ext = ifelse(singles, "singles", "doubles")
+  latestResults = read_csv(paste0("Results_", str_replace_all(Sys.Date(), " ", "_"), ".csv"))
+  initDraw = read_csv(paste0("SeededAll/Entries_", event, "_", ext, "FullySeeded.csv"))
+  N = nrow(initDraw)
+  initDraw = initDraw %>%
+    mutate(index = rep(1:(N/2), each = 2)) %>%
+    mutate(bye = (Forename == "BYE"))
+  if (firstMatch) {
+    skipIndices = 0
+    initDraw = initDraw %>%
+      mutate(index = rep(1:(N/4), each = 4)) %>%
+      filter(!bye)
+  } else {
+    skipIndices = initDraw %>%
+      filter(bye == TRUE) %>%
+      pull(index)
+  }
+  initDraw = initDraw %>%
+    filter(!(index %in% skipIndices)) %>%
+    mutate(fullName = paste(Forename, Surname))
+  relevantResults = latestResults %>%
+    filter(Event == paste(event, ext))
+  relevantWinners = relevantResults %>%
+    pull(Winner)
+  relevantWalkovers = relevantResults %>%
+    filter(Score == "Walkover") %>%
+    pull(Winner)
+  if (!singles) {
+    relevantWinners = relevantWinners %>%
+      str_split_fixed(" and ", n = 2) %>%
+      as.vector() %>%
+      str_trim()
+  }
+  if (length(relevantWalkovers) > 0) {
+    if (!singles) {
+      relevantWalkovers = relevantWalkovers %>%
+        str_split_fixed(" and ", n = 2) %>%
+        as.vector() %>%
+        str_trim()
+    }
+    walkoverIndices = initDraw %>%
+      filter(fullName %in% relevantWalkovers) %>%
+      pull(index)
+    initDraw = initDraw %>%
+      filter(!(index %in% walkoverIndices))
+  }
+  initDraw = initDraw %>%
+    mutate(winner = (fullName %in% relevantWinners)) %>%
+    filter(!winner)
+  if (removeSpecial != 0) {
+    initDraw = initDraw %>%
+      slice(-removeSpecial)
+  }
+  if (TBD) {
+    initDraw = initDraw %>%
+      group_by(index) %>%
+      mutate(N = n()) %>%
+      ungroup()
+    numExtras = N/ifelse(firstMatch, 4, 2) - sum(initDraw$N == 1)
+    initDraw = initDraw %>%
+      filter(N == 1) %>%
+      bind_rows(tibble(Forename = BYE, Surname = "", Seed = 1:numExtras))
+  }
+  initDraw = initDraw %>%
+    select(-Seed, -index, -bye, -fullName, -winner)
+  set.seed(seed = mySeed)
+  M = nrow(initDraw)
+  initDraw = initDraw %>%
+    mutate(Seed = sample(1:M, replace = FALSE))
+  fn = paste0("Seeded", str_to_title(ext), "/Entries_", event, "_", ext, "_plate.csv")
+  write_csv(initDraw, fn)
+  result = createBracket(fname = fn, singles = singles, mark = FALSE, TBD = TBD)
+  result
+}
+
+### Daily process:
+### Z = processLatestResults()
+### If plate brackets are needed:
+### Q = makePlateDraws()
+####
